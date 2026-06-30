@@ -64,33 +64,45 @@ async def shelf_ocr(image: UploadFile = File(...)):
 You are identifying books from a shelf photo.
 
 Return JSON only in this exact shape:
+
 {
   "rawText": string,
   "confidence": number,
   "titles": string[],
-  "moodSummary": string
+  "moodSummary": string,
+  "conversationStarters": string[]
 }
 
 Rules for titles:
-- Each item in titles should describe one visible book.
-- If both title and author are visible, format it as: "Title — Author".
+- Each item should represent one visible book.
+- If both title and author are visible, format as:
+  "Title — Author"
 - If only the title is visible, return just the title.
-- If only the author is visible, do not include that item unless it clearly identifies a book.
-- Do not write "unknown author" or "unknown title".
-- List only books you can reasonably identify.
-- Include partial titles if useful.
-- Do not invent titles or authors.
+- Do not write "Unknown Author" or "Unknown Title".
+- Only include books you can reasonably identify.
+- Include partial titles if they are genuinely visible.
+- Do not invent books or authors.
 
 Rules for rawText:
 - Include all visible text you can read from the image.
 
 Rules for moodSummary:
 - Write 1–2 friendly sentences.
-- Speculate lightly on the reader's tastes based only on the visible books.
-- Avoid making personal or sensitive assumptions.
+- Describe the apparent themes, genres or interests represented by the books.
+- Keep the tone warm and conversational.
 - Mention uncertainty where appropriate.
+- Avoid making assumptions about the owner's personal identity, beliefs, politics, health or other sensitive characteristics.
 
-confidence should be a number from 0 to 1.
+Rules for conversationStarters:
+- Return 2–3 short conversation starters.
+- Base them only on the books that are actually visible.
+- Keep them fun, friendly and open-ended.
+- They should feel like questions someone could naturally ask while looking at the bookshelf.
+- Do not ask anything invasive.
+- Avoid assuming the person has read every book.
+- Avoid mentioning "the image" or "the shelf".
+
+confidence should be a number between 0 and 1.
 """.strip(),
                         },
                         {
@@ -116,6 +128,7 @@ confidence should be a number from 0 to 1.
             "confidence": float(payload.get("confidence", 0)),
             "titles": payload.get("titles", []),
             "moodSummary": payload.get("moodSummary", ""),
+            "conversationStarters": payload.get("conversationStarters", []),
         }
 
     except json.JSONDecodeError:
