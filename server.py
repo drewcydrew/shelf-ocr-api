@@ -1,14 +1,12 @@
+import base64
+import json
 import os
-import re
-import tempfile
-from typing import Any
-
-os.environ["FLAGS_use_mkldnn"] = "0"
-os.environ["PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT"] = "0"
+from io import BytesIO
 
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from paddleocr import PaddleOCR
+from openai import OpenAI
+from PIL import Image
 
 app = FastAPI()
 
@@ -22,57 +20,27 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-ocr = PaddleOCR(
-    lang="en",
-    use_doc_orientation_classify=False,
-    use_doc_unwarping=False,
-)
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-
-def normalize_line(line: str) -> str:
-    return re.sub(r"\s+", " ", line).strip()
-
-
-def extract_text_items(result: Any):
-    text_items = []
-
-    for page in result:
-        data = page.json if hasattr(page, "json") else page
-
-        if isinstance(data, dict) and "res" in data:
-            data = data["res"]
-
-        if not isinstance(data, dict):
-            continue
-
-        rec_texts = data.get("rec_texts") or data.get("texts") or []
-        rec_scores = data.get("rec_scores") or data.get("scores") or []
-
-        if isinstance(rec_texts, str):
-            rec_texts = [rec_texts]
-
-        if isinstance(rec_scores, (int, float)):
-            rec_scores = [rec_scores]
-
-        for i, text in enumerate(rec_texts):
-            score = 0.0
-            if i < len(rec_scores):
-                try:
-                    score = float(rec_scores[i])
-                except Exception:
-                    score = 0.0
-
-            text_items.append({
-                "text": normalize_line(str(text)),
-                "confidence": score,
-            })
-
-    return text_items
+MAX_DIMENSION = 1600
+JPEG_QUALITY = 82
 
 
 @app.get("/")
 def health_check():
-    return {"status": "ok", "message": "Shelf OCR server is running"}
+    return {"status": "ok", "message": "Vision OCR server is running"}
+
+
+def prepare_image_for_api(image_bytes: bytes) -> str:
+    with Image.open(BytesIO(image_bytes)) as img:
+        img = img.convert("RGB")
+        img.thumbnail((MAX_DIMENSION, MAX_DIMENSION))
+
+        output = BytesIO()
+        img.save(output, format="JPEG", quality=JPEG_QUALITY, optimize=True)
+        encoded = base64.b64encode(output.getvalue()).decode("utf-8")
+
+    return f"data:image/jpeg;base64,{encoded}"
 
 
 @app.post("/api/shelf-ocr")
@@ -80,38 +48,65 @@ async def shelf_ocr(image: UploadFile = File(...)):
     if not image.content_type or not image.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Please upload an image file.")
 
-    suffix = os.path.splitext(image.filename or "")[1] or ".png"
-
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(await image.read())
-        tmp_path = tmp.name
-
     try:
-        result = ocr.predict(tmp_path)
-        text_items = extract_text_items(result)
+        image_bytes = await image.read()
+        image_data_url = prepare_image_for_api(image_bytes)
 
-        titles = [item["text"] for item in text_items]
-        raw_text = "\n".join(titles)
+        response = client.responses.create(
+            model="gpt-4.1-mini",
+            input=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": """
+You are identifying books from a shelf photo.
 
-        confidence_values = [item["confidence"] for item in text_items]
-        confidence = (
-            sum(confidence_values) / len(confidence_values)
-            if confidence_values
-            else 0
+Return JSON only in this exact shape:
+{
+  "rawText": string,
+  "confidence": number,
+  "titles": string[]
+}
+
+Rules:
+- List only book titles you can reasonably identify.
+- Include partial titles if they are useful.
+- Do not invent titles.
+- Do not include author names unless they are part of the title.
+- rawText should include all visible text you can read from the image.
+- confidence should be a number from 0 to 1.
+""".strip(),
+                        },
+                        {
+                            "type": "input_image",
+                            "image_url": image_data_url,
+                        },
+                    ],
+                }
+            ],
         )
 
+        text = response.output_text.strip()
+
+        # Remove possible markdown fences just in case.
+        if text.startswith("```"):
+            text = text.strip("`")
+            text = text.replace("json", "", 1).strip()
+
+        payload = json.loads(text)
+
         return {
-            "rawText": raw_text,
-            "confidence": confidence,
-            "titles": titles,
-            "lines": text_items,
+            "rawText": payload.get("rawText", ""),
+            "confidence": float(payload.get("confidence", 0)),
+            "titles": payload.get("titles", []),
         }
 
+    except json.JSONDecodeError:
+        raise HTTPException(
+            status_code=500,
+            detail="Vision model returned a non-JSON response.",
+        )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"OCR failed: {e}")
-
-    finally:
-        try:
-            os.remove(tmp_path)
-        except Exception:
-            pass
+        raise HTTPException(status_code=500, detail=f"Vision OCR failed: {e}")
