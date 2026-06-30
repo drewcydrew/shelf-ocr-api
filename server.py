@@ -28,6 +28,7 @@ MAX_DIMENSION = 1600
 JPEG_QUALITY = 82
 MAX_VIBE_BOOKS = 50
 MAX_VIBE_TAGS = 8
+MAX_QUESTION_LENGTH = 600
 
 VIBE_CHECK_PROMPT = """
 You analyze a known list of books and infer reading taste.
@@ -59,6 +60,22 @@ Field rules:
 - confidence: overall certainty from 0 to 1.
 """.strip()
 
+BOOKS_QUESTION_PROMPT = """
+You answer a user question using only a provided list of books.
+
+Return JSON only in this exact shape:
+{
+    "answer": string
+}
+
+Rules:
+- Ground your answer in the provided books.
+- Do not invent books, authors, or details not supported by the list.
+- If the question cannot be answered from the list, say that clearly and provide the closest useful response based on the available books.
+- Keep the response concise (2-5 sentences), conversational, and helpful.
+- Do not infer sensitive traits (health status, politics, religion, sexual orientation, disability, trauma, legal status).
+""".strip()
+
 
 class VibeBookInput(BaseModel):
     title: str = Field(..., min_length=1, max_length=220)
@@ -68,6 +85,11 @@ class VibeBookInput(BaseModel):
 
 class VibeCheckRequest(BaseModel):
     books: list[VibeBookInput] = Field(..., min_items=1, max_items=MAX_VIBE_BOOKS)
+
+
+class BooksQuestionRequest(BaseModel):
+    books: list[VibeBookInput] = Field(..., min_items=1, max_items=MAX_VIBE_BOOKS)
+    question: str = Field(..., min_length=1, max_length=MAX_QUESTION_LENGTH)
 
 
 def _strip_markdown_fence(text: str) -> str:
@@ -235,6 +257,80 @@ async def vibe_check(request: VibeCheckRequest):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Vibe-check failed: {e}")
+
+
+@app.post("/api/books-question")
+async def books_question(request: BooksQuestionRequest):
+    try:
+        question = " ".join(request.question.split()).strip()
+        if not question:
+            raise HTTPException(
+                status_code=400,
+                detail="Question cannot be empty.",
+            )
+
+        books_lines = []
+        for book in request.books:
+            title = " ".join(book.title.split()).strip()
+            author = " ".join(book.author.split()).strip() if book.author else ""
+            isbn = " ".join(book.isbn.split()).strip() if book.isbn else ""
+
+            line = f"- {title}"
+            if author:
+                line += f" by {author}"
+            if isbn:
+                line += f" (ISBN: {isbn})"
+            books_lines.append(line)
+
+        response = client.responses.create(
+            model="gpt-4.1-mini",
+            input=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": BOOKS_QUESTION_PROMPT,
+                        },
+                        {
+                            "type": "input_text",
+                            "text": (
+                                "Use this reading list as the only source of truth. "
+                                "Answer the question and return the required JSON.\n\n"
+                                + "Books:\n"
+                                + "\n".join(books_lines)
+                                + "\n\nQuestion:\n"
+                                + question
+                            ),
+                        },
+                    ],
+                }
+            ],
+        )
+
+        text = _strip_markdown_fence(response.output_text.strip())
+        payload = json.loads(text)
+
+        answer = str(payload.get("answer", "")).strip()
+        if not answer:
+            raise HTTPException(
+                status_code=500,
+                detail="Books-question model returned an empty answer.",
+            )
+
+        return {
+            "answer": answer,
+        }
+
+    except HTTPException:
+        raise
+    except json.JSONDecodeError:
+        raise HTTPException(
+            status_code=500,
+            detail="Books-question model returned a non-JSON response.",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Books-question failed: {e}")
 
 
 @app.post("/api/shelf-ocr")
