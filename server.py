@@ -71,10 +71,13 @@ Return JSON only in this exact shape:
 }
 
 Rules:
-- List only book titles you can reasonably identify.
-- Include partial titles if they are useful.
-- Do not invent titles.
-- Do not include author names unless they are part of the title.
+- Each item in titles should combine title and author when both are visible.
+- Format each item as: "Title — Author".
+- If only the title is visible, return just the title.
+- If only the author is visible, return "Unknown title — Author".
+- List only books you can reasonably identify.
+- Include partial titles if useful.
+- Do not invent titles or authors.
 - rawText should include all visible text you can read from the image.
 - confidence should be a number from 0 to 1.
 """.strip(),
