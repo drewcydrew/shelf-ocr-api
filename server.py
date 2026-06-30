@@ -60,26 +60,37 @@ async def shelf_ocr(image: UploadFile = File(...)):
                     "content": [
                         {
                             "type": "input_text",
-                            "text": """
+                           "text": """
 You are identifying books from a shelf photo.
 
 Return JSON only in this exact shape:
 {
   "rawText": string,
   "confidence": number,
-  "titles": string[]
+  "titles": string[],
+  "moodSummary": string
 }
 
-Rules:
-- Each item in titles should combine title and author when both are visible.
-- Format each item as: "Title — Author".
+Rules for titles:
+- Each item in titles should describe one visible book.
+- If both title and author are visible, format it as: "Title — Author".
 - If only the title is visible, return just the title.
-- If only the author is visible, return "Unknown title — Author".
+- If only the author is visible, do not include that item unless it clearly identifies a book.
+- Do not write "unknown author" or "unknown title".
 - List only books you can reasonably identify.
 - Include partial titles if useful.
 - Do not invent titles or authors.
-- rawText should include all visible text you can read from the image.
-- confidence should be a number from 0 to 1.
+
+Rules for rawText:
+- Include all visible text you can read from the image.
+
+Rules for moodSummary:
+- Write 1–2 friendly sentences.
+- Speculate lightly on the reader's tastes based only on the visible books.
+- Avoid making personal or sensitive assumptions.
+- Mention uncertainty where appropriate.
+
+confidence should be a number from 0 to 1.
 """.strip(),
                         },
                         {
@@ -104,6 +115,7 @@ Rules:
             "rawText": payload.get("rawText", ""),
             "confidence": float(payload.get("confidence", 0)),
             "titles": payload.get("titles", []),
+            "moodSummary": payload.get("moodSummary", ""),
         }
 
     except json.JSONDecodeError:
